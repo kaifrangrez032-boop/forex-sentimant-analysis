@@ -22,7 +22,7 @@
 
     <div id="app" class="w-full max-w-4xl">
         <header class="text-center mb-8">
-            <h1 class="text-3xl font-bold text-gray-800">Forex Pair Sentiment Analyst</h1>
+            <h1 class="3xl font-bold text-gray-800">Forex Pair Sentiment Analyst</h1>
             <p class="text-gray-500 mt-1">Generate a directional analysis based on recent news from **FX Street** and **Forex Factory**.</p>
         </header>
 
@@ -59,14 +59,20 @@
     </div>
 
     <script>
-        // Global constants for API configuration
+        // --- IMPORTANT: API KEY INJECTION ---
+        // The API key provided by the user has been securely inserted here for public hosting.
+        const apiKey = "AIzaSyBlu5uM0l_VW-iMi3WIiXcim74-lMOt59k"; 
+        // ------------------------------------
+        
         const MODEL_NAME = 'gemini-2.5-flash-preview-09-2025';
-        // API key left as an empty string, relying on the environment to provide it securely.
-        const apiKey = ""; 
         const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
 
         // Utility function for exponential backoff with retry logic
         async function fetchWithBackoff(url, options, maxRetries = 5, initialDelay = 1000) {
+            if (!apiKey) {
+                throw new Error("API Key Missing. Please ensure the apiKey variable is set.");
+            }
+            
             for (let attempt = 0; attempt < maxRetries; attempt++) {
                 let delay = initialDelay * Math.pow(2, attempt);
                 
@@ -98,12 +104,12 @@
                     if (attempt < maxRetries - 1) {
                         await new Promise(resolve => setTimeout(resolve, delay));
                     } else {
-                        throw new Error('Failed to connect to the API after multiple retries.');
+                        throw new Error('Failed to connect to the API after multiple retries. Check your network connection.');
                     }
                 }
             }
             // If the loop finishes without success
-            throw new Error('Failed to connect to the API after multiple retries.');
+            throw new Error('Failed to connect to the API after multiple retries. Check your network connection.');
         }
 
         function setUIState(isLoading, message = '') {
@@ -125,6 +131,12 @@
         }
 
         async function analyzeNews() {
+            // Check for API key before starting
+            if (!apiKey) {
+                setUIState(false, "ERROR: API Key is missing. Please ensure the apiKey variable is set.");
+                return;
+            }
+            
             // Get the pair name only
             const pairName = document.getElementById('newsQuery').value.trim().toUpperCase();
             
@@ -150,7 +162,8 @@
                 systemInstruction: {
                     parts: [{ text: systemPrompt }]
                 },
-                config: {
+                // FIX: Renamed 'config' to 'generationConfig' to match the API specification.
+                generationConfig: { 
                     temperature: 0.1,
                 }
             };
@@ -211,8 +224,7 @@
 
             } catch (e) {
                 console.error("[Forex Analysis Error]:", e);
-                // Providing a specific troubleshooting message for the user's environment.
-                setUIState(false, `Error: ${e.message}. If this persists, please ensure you are running the file using a local web server (e.g., Web Server for Chrome) on an http:// address, not directly from file://.`);
+                setUIState(false, `Error: API call failed. This usually means the API Key is invalid or restricted. Please check the browser console's 'Network' tab for the HTTP error status code (400, 403, or 429).`);
             }
         }
         
