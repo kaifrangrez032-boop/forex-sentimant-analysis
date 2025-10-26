@@ -1,0 +1,2 @@
+# forex-sentimant-analysis
+analyzer
