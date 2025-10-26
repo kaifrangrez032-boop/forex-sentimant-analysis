@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forex News Sentiment Analyzer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f4f7f9; }
+        .card { background-color: white; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1); }
+        .loader { border-top-color: #3b82f6; -webkit-animation: spinner 1.5s linear infinite; animation: spinner 1.5s linear infinite; }
+        @-webkit-keyframes spinner { 0% { -webkit-transform: rotate(0deg); } 100% { -webkit-transform: rotate(360deg); } }
+        @keyframes spinner { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        /* Style for positive/negative sentiment */
+        .sentiment-positive { color: #10b981; font-weight: 700; } /* Emerald 500 */
+        .sentiment-negative { color: #ef4444; font-weight: 700; } /* Red 500 */
+        .prose p { margin-bottom: 0.5rem; }
+    </style>
+</head>
+<body class="p-4 sm:p-8 min-h-screen flex justify-center items-start">
+
+    <div id="app" class="w-full max-w-4xl">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-800">Forex Pair Sentiment Analyst</h1>
+            <p class="text-gray-500 mt-1">Generate a directional analysis based on recent news from **FX Street** and **Forex Factory**.</p>
+        </header>
+
+        <div class="card p-6 rounded-xl space-y-6">
+            <!-- Input Area -->
+            <div>
+                <label for="newsQuery" class="block text-sm font-medium text-gray-700 mb-2">Currency Pair</label>
+                <input type="text" id="newsQuery" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500" placeholder="e.g., GBP/USD or USD/JPY">
+            </div>
+
+            <!-- Button and Status -->
+            <div class="flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0 sm:space-x-4">
+                <button id="analyzeButton" onclick="analyzeNews()" class="w-full sm:w-auto px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition duration-150 ease-in-out shadow-md disabled:bg-blue-300">
+                    Analyze Forex Sentiment
+                </button>
+                <div id="statusMessage" class="text-sm text-red-500"></div>
+            </div>
+
+            <!-- Loading Indicator -->
+            <div id="loadingIndicator" class="hidden flex items-center justify-center space-x-2 p-4">
+                <div class="loader ease-linear rounded-full border-4 border-t-4 border-gray-200 h-8 w-8"></div>
+                <span class="text-gray-600">Analyzing Market Sentiment...</span>
+            </div>
+
+            <!-- Output Area -->
+            <div id="results" class="pt-6 border-t border-gray-200 mt-6 hidden">
+                <h2 class="text-xl font-semibold text-gray-800 mb-3">Sentiment Summary (FX Street / Forex Factory)</h2>
+                <div id="analysisText" class="prose max-w-none p-4 rounded-lg bg-gray-50 text-gray-800 border border-gray-100"></div>
+
+                <h3 class="text-lg font-semibold text-gray-800 mt-6 mb-2">Sources Used</h3>
+                <ul id="sourcesList" class="list-disc pl-5 space-y-1 text-sm text-gray-600"></ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global constants for API configuration
+        const MODEL_NAME = 'gemini-2.5-flash-preview-09-2025';
+        // API key left as an empty string, relying on the environment to provide it securely.
+        const apiKey = ""; 
+        const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
+
+        // Utility function for exponential backoff with retry logic
+        async function fetchWithBackoff(url, options, maxRetries = 5, initialDelay = 1000) {
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+                let delay = initialDelay * Math.pow(2, attempt);
+                
+                try {
+                    const response = await fetch(url, options);
+
+                    if (response.ok) {
+                        return response; // Success
+                    }
+
+                    // Handle retryable errors
+                    if (response.status === 429 || response.status >= 500) {
+                        const retryAfter = response.headers.get('retry-after');
+                        delay = retryAfter ? parseInt(retryAfter, 10) * 1000 : delay;
+                        console.warn(`[API] Retryable error (${response.status}). Retrying in ${delay / 1000}s...`);
+                    } else if (response.status >= 400) {
+                        // Unretryable client errors (except 429)
+                        console.error(`[API] Unretryable client error (${response.status})`);
+                        const errorBody = await response.json();
+                        throw new Error(`API Error ${response.status}: ${errorBody.error?.message || response.statusText}`);
+                    }
+
+                    if (attempt < maxRetries - 1) {
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+
+                } catch (error) {
+                    console.error(`[API] Fetch attempt ${attempt + 1} failed:`, error.message);
+                    if (attempt < maxRetries - 1) {
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    } else {
+                        throw new Error('Failed to connect to the API after multiple retries.');
+                    }
+                }
+            }
+            // If the loop finishes without success
+            throw new Error('Failed to connect to the API after multiple retries.');
+        }
+
+        function setUIState(isLoading, message = '') {
+            const button = document.getElementById('analyzeButton');
+            const status = document.getElementById('statusMessage');
+            const loading = document.getElementById('loadingIndicator');
+
+            button.disabled = isLoading;
+            loading.style.display = isLoading ? 'flex' : 'none';
+            status.textContent = message;
+            status.className = message.includes('Error') ? 'text-sm text-red-500' : 'text-sm text-gray-600';
+
+            // Clear results on new analysis start
+            if (isLoading) {
+                document.getElementById('results').classList.add('hidden');
+                document.getElementById('analysisText').innerHTML = '';
+                document.getElementById('sourcesList').innerHTML = '';
+            }
+        }
+
+        async function analyzeNews() {
+            // Get the pair name only
+            const pairName = document.getElementById('newsQuery').value.trim().toUpperCase();
+            
+            if (!pairName) {
+                setUIState(false, 'Please enter a currency pair (e.g., EUR/USD) to analyze.');
+                return;
+            }
+
+            setUIState(true);
+
+            // Construct the detailed query automatically
+            const baseQuery = `Latest news and short-term directional outlook for the ${pairName} pair.`;
+
+            // System Prompt remains the same as it dictates the output format (points, sentiment)
+            const systemPrompt = "Act as a specialist Forex analyst. Your summary must be based primarily on information found by searching for the user's query and the terms 'FX Street' or 'Forex Factory'. Provide a concise analysis in a list of simple bullet points. Each point must describe a factor and conclude with a clear directional sign of either **Positive** (for the pair) or **Negative** (for the pair).";
+
+            // Add preferred sources to the base query
+            const modifiedQuery = `${baseQuery} FX Street Forex Factory`;
+
+            const payload = {
+                contents: [{ parts: [{ text: modifiedQuery }] }],
+                tools: [{ "google_search": {} }],
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                },
+                config: {
+                    temperature: 0.1,
+                }
+            };
+
+            try {
+                const response = await fetchWithBackoff(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+                const candidate = result.candidates?.[0];
+
+                if (!candidate || !candidate.content?.parts?.[0]?.text) {
+                    throw new Error("Received an empty or invalid response from the API. Try a more specific pair or a broader query.");
+                }
+
+                // 1. Extract the generated text
+                const text = candidate.content.parts[0].text;
+
+                // 2. Extract grounding sources
+                let sources = [];
+                const groundingMetadata = candidate.groundingMetadata;
+                if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                    sources = groundingMetadata.groundingAttributions
+                        .map(attribution => ({
+                            uri: attribution.web?.uri,
+                            title: attribution.web?.title,
+                        }))
+                        .filter(source => source.uri && source.title);
+                }
+
+                // 3. Render results
+                document.getElementById('analysisText').innerHTML = formatTextForHTML(text);
+                const sourcesList = document.getElementById('sourcesList');
+                sourcesList.innerHTML = ''; // Clear previous sources
+                if (sources.length > 0) {
+                    sources.forEach(source => {
+                        const li = document.createElement('li');
+                        const a = document.createElement('a');
+                        a.href = source.uri;
+                        a.textContent = source.title;
+                        a.target = '_blank';
+                        a.rel = 'noopener noreferrer';
+                        a.className = 'text-blue-600 hover:underline';
+                        li.appendChild(a);
+                        sourcesList.appendChild(li);
+                    });
+                } else {
+                     const li = document.createElement('li');
+                     li.textContent = 'No specific web sources were cited for this response.';
+                     sourcesList.appendChild(li);
+                }
+
+                document.getElementById('results').classList.remove('hidden');
+                setUIState(false, `Analysis for ${pairName} complete.`);
+
+            } catch (e) {
+                console.error("[Forex Analysis Error]:", e);
+                // Providing a specific troubleshooting message for the user's environment.
+                setUIState(false, `Error: ${e.message}. If this persists, please ensure you are running the file using a local web server (e.g., Web Server for Chrome) on an http:// address, not directly from file://.`);
+            }
+        }
+        
+        // Utility function to convert markdown list and sentiment to styled HTML
+        function formatTextForHTML(text) {
+            let html = text;
+
+            // 1. Convert Markdown bullets (*) to HTML ordered list items (1, 2, 3 format)
+            html = html.replace(/^\* (.*)$/gm, '<li>$1</li>');
+            html = `<ol class="list-decimal list-inside space-y-3 pl-4">${html}</ol>`;
+            
+            // 2. Add specific styling for POSITIVE and NEGATIVE keywords
+            html = html.replace(/(\*\*\s*Positive\s*\*\*)/gi, '<span class="sentiment-positive">$1</span>');
+            html = html.replace(/(\*\*\s*Negative\s*\*\*)/gi, '<span class="sentiment-negative">$1</span>');
+
+            return html;
+        }
+
+    </script>
+</body>
+</html>
